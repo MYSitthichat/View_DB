@@ -1,0 +1,58 @@
+# Dependency directories
+node_modules/
+frontend/node_modules/
+
+# Build outputs
+build/bin/
+frontend/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+temp-wails/
+
+# Go workspace and caches
+go.work
+go.work.sum
+.build/
+
+# IDEs and editors
+.vscode/
+.idea/
+.cursor/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Sensitive files / Local data / Credentials / Logs
+.env
+*.env*
+*credentials*
+*.log
+app.log
+data/
+connections.json
+history.json
+saved_queries.json
+
+# Test files (User request: do not include test files)
+*_test.go
+*.test.js
+*.test.jsx
+*.spec.js
+*.spec.jsx
+test/
+tests/
+coverage/
+
+# Markdown files (User request: do not include .md files)
+*.md
+**/*.md
