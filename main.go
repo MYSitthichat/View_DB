@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -13,7 +14,8 @@ import (
 
 	"view-db/internal/app"
 	"view-db/internal/connection"
-	"view-db/internal/influx"
+	"view-db/internal/db"
+	"view-db/internal/db/influx"
 	"view-db/internal/logger"
 	q "view-db/internal/query"
 )
@@ -74,7 +76,10 @@ func (d *DesktopApp) ExportQueryJSON(queryID string) (string, error) {
 	}
 	path, err := runtime.SaveFileDialog(d.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: fmt.Sprintf("view-db-%s.json", queryID),
-		Filters:         []runtime.FileFilter{{DisplayName: "JSON", Pattern: "*.json"}},
+		Filters: []runtime.FileFilter{
+			{DisplayName: "JSON (single object)", Pattern: "*.json"},
+			{DisplayName: "NDJSON (one row per line, large datasets)", Pattern: "*.ndjson"},
+		},
 	})
 	if err != nil {
 		return "", err
@@ -82,24 +87,33 @@ func (d *DesktopApp) ExportQueryJSON(queryID string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	if err := d.svc.ExportQueryJSON(queryID, path); err != nil {
-		return "", err
+	// Choose writer based on file extension. NDJSON is preferred for
+	// large exports because each row is written independently and the
+	// result rows stay out of the output buffer.
+	if strings.HasSuffix(strings.ToLower(path), ".ndjson") {
+		if err := d.svc.ExportQueryNDJSON(queryID, path); err != nil {
+			return "", err
+		}
+	} else {
+		if err := d.svc.ExportQueryJSON(queryID, path); err != nil {
+			return "", err
+		}
 	}
 	return path, nil
 }
-func (d *DesktopApp) ListDatabases(id string) ([]influx.DatabaseInfo, error) {
+func (d *DesktopApp) ListDatabases(id string) ([]db.DatabaseInfo, error) {
 	return d.svc.ListDatabases(context.Background(), id)
 }
-func (d *DesktopApp) ListDatabasesForProfile(profile connection.ConnectionUpsert) ([]influx.DatabaseInfo, error) {
+func (d *DesktopApp) ListDatabasesForProfile(profile connection.ConnectionUpsert) ([]db.DatabaseInfo, error) {
 	return d.svc.ListDatabasesForProfile(context.Background(), profile)
 }
-func (d *DesktopApp) ListMeasurements(id string, scope influx.QueryScope) ([]influx.MeasurementInfo, error) {
+func (d *DesktopApp) ListMeasurements(id string, scope db.QueryScope) ([]influx.MeasurementInfo, error) {
 	return d.svc.ListMeasurements(context.Background(), id, scope)
 }
-func (d *DesktopApp) ListFields(id string, scope influx.QueryScope, measurement string) ([]influx.FieldInfo, error) {
+func (d *DesktopApp) ListFields(id string, scope db.QueryScope, measurement string) ([]influx.FieldInfo, error) {
 	return d.svc.ListFields(context.Background(), id, scope, measurement)
 }
-func (d *DesktopApp) ListTags(id string, scope influx.QueryScope, measurement string) ([]influx.TagInfo, error) {
+func (d *DesktopApp) ListTags(id string, scope db.QueryScope, measurement string) ([]influx.TagInfo, error) {
 	return d.svc.ListTags(context.Background(), id, scope, measurement)
 }
 

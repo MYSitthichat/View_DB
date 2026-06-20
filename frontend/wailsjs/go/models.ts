@@ -12,6 +12,11 @@ export namespace connection {
 	    bucket?: string;
 	    database?: string;
 	    retentionPolicy?: string;
+	    host?: string;
+	    port?: number;
+	    sslMode?: string;
+	    schema?: string;
+	    tlsConfig?: Record<string, string>;
 	    tlsInsecure: boolean;
 	    timeoutSeconds: number;
 	
@@ -32,6 +37,11 @@ export namespace connection {
 	        this.bucket = source["bucket"];
 	        this.database = source["database"];
 	        this.retentionPolicy = source["retentionPolicy"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.sslMode = source["sslMode"];
+	        this.schema = source["schema"];
+	        this.tlsConfig = source["tlsConfig"];
 	        this.tlsInsecure = source["tlsInsecure"];
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	    }
@@ -48,6 +58,11 @@ export namespace connection {
 	    bucket?: string;
 	    database?: string;
 	    retentionPolicy?: string;
+	    host?: string;
+	    port?: number;
+	    sslMode?: string;
+	    schema?: string;
+	    tlsConfig?: Record<string, string>;
 	    tlsInsecure: boolean;
 	    timeoutSeconds: number;
 	
@@ -68,6 +83,11 @@ export namespace connection {
 	        this.bucket = source["bucket"];
 	        this.database = source["database"];
 	        this.retentionPolicy = source["retentionPolicy"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.sslMode = source["sslMode"];
+	        this.schema = source["schema"];
+	        this.tlsConfig = source["tlsConfig"];
 	        this.tlsInsecure = source["tlsInsecure"];
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	    }
@@ -75,7 +95,7 @@ export namespace connection {
 
 }
 
-export namespace influx {
+export namespace db {
 	
 	export class DatabaseInfo {
 	    name: string;
@@ -89,6 +109,29 @@ export namespace influx {
 	        this.name = source["name"];
 	    }
 	}
+	export class QueryScope {
+	    database: string;
+	    bucket: string;
+	    org: string;
+	    schema?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryScope(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.database = source["database"];
+	        this.bucket = source["bucket"];
+	        this.org = source["org"];
+	        this.schema = source["schema"];
+	    }
+	}
+
+}
+
+export namespace influx {
+	
 	export class FieldInfo {
 	    name: string;
 	    type: string;
@@ -113,22 +156,6 @@ export namespace influx {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
-	    }
-	}
-	export class QueryScope {
-	    database: string;
-	    bucket: string;
-	    org: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new QueryScope(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.database = source["database"];
-	        this.bucket = source["bucket"];
-	        this.org = source["org"];
 	    }
 	}
 	export class TagInfo {

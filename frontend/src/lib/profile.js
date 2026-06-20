@@ -1,0 +1,20 @@
+// lib/profile.js — connection profile defaults
+export const emptyProfile = {
+  id: '',
+  name: '',
+  version: 'v2',
+  url: '',
+  username: '',
+  password: '',
+  token: '',
+  organization: '',
+  bucket: '',
+  database: '',
+  retentionPolicy: '',
+  host: '',
+  port: 5432,
+  sslMode: 'disable',
+  schema: 'public',
+  tlsInsecure: true,
+  timeoutSeconds: 30,
+};

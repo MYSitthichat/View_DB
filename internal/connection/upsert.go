@@ -15,8 +15,14 @@ type ConnectionUpsert struct {
 	Bucket          string        `json:"bucket,omitempty"`
 	Database        string        `json:"database,omitempty"`
 	RetentionPolicy string        `json:"retentionPolicy,omitempty"`
-	TLSInsecure     bool          `json:"tlsInsecure"`
-	TimeoutSeconds  int           `json:"timeoutSeconds"`
+	// PostgreSQL-specific.
+	Host        string            `json:"host,omitempty"`
+	Port        int               `json:"port,omitempty"`
+	SSLMode     string            `json:"sslMode,omitempty"`
+	Schema      string            `json:"schema,omitempty"`
+	TLSConfig   map[string]string `json:"tlsConfig,omitempty"`
+	TLSInsecure bool              `json:"tlsInsecure"`
+	TimeoutSeconds int `json:"timeoutSeconds"`
 }
 
 func (u ConnectionUpsert) Profile() ConnectionProfile {
@@ -32,6 +38,11 @@ func (u ConnectionUpsert) Profile() ConnectionProfile {
 		Bucket:          u.Bucket,
 		Database:        u.Database,
 		RetentionPolicy: u.RetentionPolicy,
+		Host:            u.Host,
+		Port:            u.Port,
+		SSLMode:         u.SSLMode,
+		Schema:          u.Schema,
+		TLSConfig:       u.TLSConfig,
 		TLSInsecure:     u.TLSInsecure,
 		TimeoutSeconds:  u.TimeoutSeconds,
 	}

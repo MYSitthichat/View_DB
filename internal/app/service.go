@@ -10,8 +10,10 @@ import (
 
 	"view-db/internal/config"
 	"view-db/internal/connection"
+	"view-db/internal/db"
+	"view-db/internal/db/influx"
+	"view-db/internal/db/postgres"
 	"view-db/internal/export"
-	"view-db/internal/influx"
 	q "view-db/internal/query"
 )
 
@@ -93,6 +95,24 @@ func (s *Service) AddConnection(upsert connection.ConnectionUpsert) error {
 				profile.HasToken = false
 			}
 		}
+	case connection.InfluxPg:
+		if upsert.Password == "" {
+			_ = s.secrets.DeleteConnectionPassword(profile.ID)
+			profile.HasPassword = false
+		} else if upsert.Password != "••••••••" {
+			if err := s.secrets.SetConnectionPassword(profile.ID, upsert.Password); err != nil {
+				return err
+			}
+			profile.Password = upsert.Password
+			profile.HasPassword = true
+		} else {
+			if secret, err := s.secrets.GetConnectionPassword(profile.ID); err == nil {
+				profile.Password = secret
+				profile.HasPassword = true
+			} else {
+				profile.HasPassword = false
+			}
+		}
 	}
 
 	return s.connections.Save(profile)
@@ -125,7 +145,7 @@ func (s *Service) DeleteConnection(id string) error {
 	return nil
 }
 
-func (s *Service) getAdapter(id string) (influx.InfluxAdapter, error) {
+func (s *Service) getAdapter(id string) (db.Adapter, error) {
 	profile, ok := s.connections.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("connection not found: %s", id)
@@ -141,8 +161,11 @@ func (s *Service) getAdapter(id string) (influx.InfluxAdapter, error) {
 			if err != nil {
 				slog.Error("getAdapter failed to retrieve password from keyring", "id", profile.ID, "error", err)
 			} else {
-				slog.Info("getAdapter retrieved password from keyring", "id", profile.ID, "password_len", len(secret))
+				// Use Debug level for secret-related metadata. The RedactingHandler
+				// in internal/logger also strips any leaked secret, but it's better
+				// not to log lengths in the first place at Info level.
 				profile.Password = secret
+				slog.Debug("getAdapter retrieved password from keyring", "id", profile.ID)
 			}
 		}
 	case connection.InfluxV2, connection.InfluxV3:
@@ -151,17 +174,23 @@ func (s *Service) getAdapter(id string) (influx.InfluxAdapter, error) {
 			if err != nil {
 				slog.Error("getAdapter failed to retrieve token from keyring", "id", profile.ID, "error", err)
 			} else {
-				slog.Info("getAdapter retrieved token from keyring", "id", profile.ID, "token_len", len(secret))
 				profile.Token = secret
+				slog.Debug("getAdapter retrieved token from keyring", "id", profile.ID)
 			}
 		} else {
-			slog.Info("getAdapter using existing in-memory profile token", "id", profile.ID, "token_len", len(profile.Token))
+			slog.Debug("getAdapter using existing in-memory profile token", "id", profile.ID)
+		}
+	case connection.InfluxPg:
+		if profile.Password == "" {
+			if secret, err := s.secrets.GetConnectionPassword(profile.ID); err == nil {
+				profile.Password = secret
+			}
 		}
 	}
 
-	adapter := influx.NewAdapter(profile)
-	if adapter == nil {
-		return nil, fmt.Errorf("unsupported connection version")
+	adapter, err := db.NewAdapter(profile)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported connection version: %w", err)
 	}
 	return adapter, nil
 }
@@ -205,7 +234,8 @@ func (s *Service) TestConnectionProfile(ctx context.Context, upsert connection.C
 
 	// Hydrate the credential secret from the upsert DTO directly or fallback to keyring.
 	switch profile.Version {
-	case connection.InfluxV1:
+	case connection.InfluxV1, connection.InfluxPg:
+		// pg shares the password field with v1 (both use basic auth).
 		if upsert.Password == "••••••••" && upsert.ID != "" {
 			if secret, err := s.secrets.GetConnectionPassword(upsert.ID); err == nil {
 				profile.Password = secret
@@ -223,15 +253,15 @@ func (s *Service) TestConnectionProfile(ctx context.Context, upsert connection.C
 		}
 	}
 
-	adapter := influx.NewAdapter(profile)
-	if adapter == nil {
-		return fmt.Errorf("unsupported connection version")
+	adapter, err := db.NewAdapter(profile)
+	if err != nil {
+		return fmt.Errorf("unsupported connection version: %w", err)
 	}
 	defer adapter.Close()
 	return adapter.TestConnection(ctx)
 }
 
-func (s *Service) ListDatabases(ctx context.Context, id string) ([]influx.DatabaseInfo, error) {
+func (s *Service) ListDatabases(ctx context.Context, id string) ([]db.DatabaseInfo, error) {
 	profile, ok := s.connections.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("connection not found: %s", id)
@@ -247,7 +277,7 @@ func (s *Service) ListDatabases(ctx context.Context, id string) ([]influx.Databa
 	return adapter.ListDatabases(ctx)
 }
 
-func (s *Service) ListDatabasesForProfile(ctx context.Context, upsert connection.ConnectionUpsert) ([]influx.DatabaseInfo, error) {
+func (s *Service) ListDatabasesForProfile(ctx context.Context, upsert connection.ConnectionUpsert) ([]db.DatabaseInfo, error) {
 	profile := upsert.Profile()
 	if err := profile.Validate(); err != nil {
 		return nil, err
@@ -257,7 +287,7 @@ func (s *Service) ListDatabasesForProfile(ctx context.Context, upsert connection
 	defer cancel()
 
 	switch profile.Version {
-	case connection.InfluxV1:
+	case connection.InfluxV1, connection.InfluxPg:
 		if upsert.Password == "••••••••" && upsert.ID != "" {
 			if secret, err := s.secrets.GetConnectionPassword(upsert.ID); err == nil {
 				profile.Password = secret
@@ -275,15 +305,18 @@ func (s *Service) ListDatabasesForProfile(ctx context.Context, upsert connection
 		}
 	}
 
-	adapter := influx.NewAdapter(profile)
-	if adapter == nil {
-		return nil, fmt.Errorf("unsupported connection version")
+	adapter, err := db.NewAdapter(profile)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported connection version: %w", err)
 	}
 	defer adapter.Close()
 	return adapter.ListDatabases(ctx)
 }
 
-func (s *Service) ListMeasurements(ctx context.Context, id string, scope influx.QueryScope) ([]influx.MeasurementInfo, error) {
+// ListMeasurements returns the list of "tables" available in a database.
+// For InfluxDB connections these are measurements; for PostgreSQL these
+// are user tables/views. The frontend uses the same shape regardless.
+func (s *Service) ListMeasurements(ctx context.Context, id string, scope db.QueryScope) ([]influx.MeasurementInfo, error) {
 	profile, ok := s.connections.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("connection not found: %s", id)
@@ -296,10 +329,44 @@ func (s *Service) ListMeasurements(ctx context.Context, id string, scope influx.
 		return nil, err
 	}
 	defer adapter.Close()
-	return adapter.ListMeasurements(ctx, scope)
+
+	if profile.Version == connection.InfluxPg {
+		pg, ok := db.PostgresSchemaAdapter(adapter)
+		if !ok {
+			return nil, fmt.Errorf("connection is not PostgreSQL")
+		}
+		tables, err := pg.ListTables(ctx, postgres.QueryScope{Database: scope.Database, Schema: scope.Schema})
+		if err != nil {
+			return nil, err
+		}
+		// Map pg TableInfo → influx MeasurementInfo so the frontend tree works
+		// unchanged. Type is appended to Name for visibility ("users (view)").
+		out := make([]influx.MeasurementInfo, 0, len(tables))
+		for _, t := range tables {
+			name := t.Name
+			if t.Type != "" && t.Type != "table" {
+				name = t.Name + " (" + t.Type + ")"
+			}
+			out = append(out, influx.MeasurementInfo{Name: name})
+		}
+		return out, nil
+	}
+
+	infl, ok := db.InfluxSchemaAdapter(adapter)
+	if !ok {
+		return nil, fmt.Errorf("connection is not InfluxDB")
+	}
+	return infl.ListMeasurements(ctx, influx.QueryScope{
+		Database: scope.Database,
+		Bucket:   scope.Bucket,
+		Org:      scope.Org,
+		Schema:   scope.Schema,
+	})
 }
 
-func (s *Service) ListFields(ctx context.Context, id string, scope influx.QueryScope, measurement string) ([]influx.FieldInfo, error) {
+// ListFields returns the list of "columns" available in a table.
+// For InfluxDB these are field keys; for PostgreSQL these are columns.
+func (s *Service) ListFields(ctx context.Context, id string, scope db.QueryScope, measurement string) ([]influx.FieldInfo, error) {
 	profile, ok := s.connections.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("connection not found: %s", id)
@@ -312,10 +379,38 @@ func (s *Service) ListFields(ctx context.Context, id string, scope influx.QueryS
 		return nil, err
 	}
 	defer adapter.Close()
-	return adapter.ListFields(ctx, scope, measurement)
+
+	if profile.Version == connection.InfluxPg {
+		pg, ok := db.PostgresSchemaAdapter(adapter)
+		if !ok {
+			return nil, fmt.Errorf("connection is not PostgreSQL")
+		}
+		cols, err := pg.ListColumns(ctx, postgres.QueryScope{Database: scope.Database, Schema: scope.Schema}, measurement)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]influx.FieldInfo, 0, len(cols))
+		for _, c := range cols {
+			out = append(out, influx.FieldInfo{Name: c.Name, Type: c.Type})
+		}
+		return out, nil
+	}
+
+	infl, ok := db.InfluxSchemaAdapter(adapter)
+	if !ok {
+		return nil, fmt.Errorf("connection is not InfluxDB")
+	}
+	return infl.ListFields(ctx, influx.QueryScope{
+		Database: scope.Database,
+		Bucket:   scope.Bucket,
+		Org:      scope.Org,
+		Schema:   scope.Schema,
+	}, measurement)
 }
 
-func (s *Service) ListTags(ctx context.Context, id string, scope influx.QueryScope, measurement string) ([]influx.TagInfo, error) {
+// ListTags returns the list of "tag keys" available in a measurement.
+// PostgreSQL has no equivalent concept, so this returns an empty list.
+func (s *Service) ListTags(ctx context.Context, id string, scope db.QueryScope, measurement string) ([]influx.TagInfo, error) {
 	profile, ok := s.connections.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("connection not found: %s", id)
@@ -328,7 +423,33 @@ func (s *Service) ListTags(ctx context.Context, id string, scope influx.QuerySco
 		return nil, err
 	}
 	defer adapter.Close()
-	return adapter.ListTags(ctx, scope, measurement)
+
+	if profile.Version == connection.InfluxPg {
+		pg, ok := db.PostgresSchemaAdapter(adapter)
+		if !ok {
+			return nil, fmt.Errorf("connection is not PostgreSQL")
+		}
+		pgTags, err := pg.ListTags(ctx, postgres.QueryScope{Database: scope.Database, Schema: scope.Schema}, measurement)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]influx.TagInfo, 0, len(pgTags))
+		for _, t := range pgTags {
+			out = append(out, influx.TagInfo{Name: t.Name})
+		}
+		return out, nil
+	}
+
+	infl, ok := db.InfluxSchemaAdapter(adapter)
+	if !ok {
+		return nil, fmt.Errorf("connection is not InfluxDB")
+	}
+	return infl.ListTags(ctx, influx.QueryScope{
+		Database: scope.Database,
+		Bucket:   scope.Bucket,
+		Org:      scope.Org,
+		Schema:   scope.Schema,
+	}, measurement)
 }
 
 func (s *Service) ExecuteQuery(ctx context.Context, req q.QueryRequest) (q.QueryResult, error) {
@@ -352,7 +473,7 @@ func (s *Service) ExecuteQuery(ctx context.Context, req q.QueryRequest) (q.Query
 		ctx = ctx2
 	}
 
-	result, err := adapter.Query(ctx, influx.QueryRequest{
+	result, err := adapter.Query(ctx, db.QueryRequest{
 		ConnectionID:    req.ConnectionID,
 		Query:           req.Statement,
 		Limit:           req.Limit,
@@ -412,6 +533,9 @@ func (s *Service) CancelQuery(id string) error {
 	return nil
 }
 
+// ExportQueryCSV streams the query result to filePath as RFC 4180 CSV.
+// Rows exceeding export.MaxExportRows are truncated and a warning is
+// logged so the user knows data was clipped.
 func (s *Service) ExportQueryCSV(queryID, filePath string) error {
 	if filePath == "" {
 		return fmt.Errorf("file path is required")
@@ -423,9 +547,14 @@ func (s *Service) ExportQueryCSV(queryID, filePath string) error {
 	if job.Status != q.JobSuccess || job.Result == nil {
 		return fmt.Errorf("query is not completed")
 	}
-	return export.WriteCSV(filePath, job.Result.Columns, job.Result.Rows)
+	truncated, err := export.WriteCSVCapped(filePath, job.Result.Columns, job.Result.Rows)
+	if truncated {
+		slog.Warn("ExportQueryCSV truncated to MaxExportRows", "query_id", queryID, "max", export.MaxExportRows)
+	}
+	return err
 }
 
+// ExportQueryJSON writes the full result as a pretty-printed JSON envelope.
 func (s *Service) ExportQueryJSON(queryID, filePath string) error {
 	if filePath == "" {
 		return fmt.Errorf("file path is required")
@@ -438,6 +567,24 @@ func (s *Service) ExportQueryJSON(queryID, filePath string) error {
 		return fmt.Errorf("query is not completed")
 	}
 	return export.WriteJSON(filePath, job.Result.Columns, job.Result.Rows, job.Result.Count)
+}
+
+// ExportQueryNDJSON streams rows as newline-delimited JSON (one object
+// per line, with a leading header line carrying column names). Use this
+// for very large exports that don't fit comfortably in a single JSON
+// document.
+func (s *Service) ExportQueryNDJSON(queryID, filePath string) error {
+	if filePath == "" {
+		return fmt.Errorf("file path is required")
+	}
+	job, err := s.GetQuery(queryID)
+	if err != nil {
+		return err
+	}
+	if job.Status != q.JobSuccess || job.Result == nil {
+		return fmt.Errorf("query is not completed")
+	}
+	return export.WriteNDJSON(filePath, job.Result.Columns, job.Result.Rows)
 }
 
 func (s *Service) appendQueryHistory(item q.QueryHistoryItem) {

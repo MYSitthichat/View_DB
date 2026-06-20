@@ -24,10 +24,19 @@ type v1Adapter struct {
 	authPass   string
 }
 
-func newV1Adapter(profile connection.ConnectionProfile) InfluxAdapter {
-	timeout := time.Duration(profile.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+func newV1Adapter(profile connection.ConnectionProfile) Adapter {
+	// Use a generous client timeout as a safety net only. The actual query
+	// deadline comes from the context passed to Query() (set by
+	// service.ExecuteQuery from profile.TimeoutSeconds). Setting
+	// http.Client.Timeout to the profile value was previously overriding the
+	// context, causing "read body: context deadline exceeded" even when the
+	// user had set a higher profile timeout — see fix in commit.
+	safetyNet := 2 * time.Hour
+	if t := profile.TimeoutSeconds; t > 0 {
+		safetyNet = time.Duration(t) * time.Second * 4
+		if safetyNet < time.Hour {
+			safetyNet = time.Hour
+		}
 	}
 
 	return &v1Adapter{
@@ -36,7 +45,7 @@ func newV1Adapter(profile connection.ConnectionProfile) InfluxAdapter {
 		queryURL:   fmt.Sprintf("%s/query", profile.URL),
 		authUser:   profile.Username,
 		authPass:   profile.Password,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: safetyNet},
 		pingClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -217,8 +226,20 @@ func (a *v1Adapter) ListTags(ctx context.Context, scope QueryScope, measurement 
 	return out, nil
 }
 
+// localLimitQuery appends " LIMIT n" to a query that doesn't already have one.
+// Inlined here to avoid an import cycle with internal/db.
+func localLimitQuery(query string, limit int) string {
+	if limit <= 0 {
+		return query
+	}
+	if strings.Contains(strings.ToLower(query), " limit ") {
+		return query
+	}
+	return fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
+}
+
 func (a *v1Adapter) Query(ctx context.Context, req QueryRequest) (*QueryResult, error) {
-	queryText := limitQuery(req.Query, req.Limit)
+	queryText := localLimitQuery(req.Query, req.Limit)
 	db := req.Database
 	if db == "" {
 		db = a.profile.Database
@@ -257,7 +278,6 @@ func reorderWithCanonical(qr *QueryResult, canonical []string) *QueryResult {
 			keep = append(keep, c)
 		}
 	}
-	// Append any columns the response had but canonical didn't (rare).
 	for _, c := range qr.Columns {
 		if !contains(keep, c) {
 			keep = append(keep, c)
@@ -294,12 +314,6 @@ func contains(s []string, v string) bool {
 // mergeV1Series unions columns across ALL series (InfluxDB v1 returns one
 // series per tag combination, each with its own column subset) and pads rows
 // from narrower series with nil so every row aligns to the same column set.
-//
-// Previously only series[0] was used, which caused queries on wide tables
-// (e.g. VIBRATION_SENSOR with 46+ fields split across many series) to show
-// only the columns of whichever series InfluxDB happened to put first for
-// that LIMIT/OFFSET range — page 1 might show 6 columns, page 4 might show
-// 46. Now every page shows the same complete column set.
 func mergeV1Series(series []v1Series) *QueryResult {
 	seen := map[string]struct{}{}
 	allColumns := make([]string, 0)
@@ -342,23 +356,3 @@ func (a *v1Adapter) Close() error {
 	a.pingClient.CloseIdleConnections()
 	return nil
 }
-
-type errorAdapter struct{ reason string }
-
-func (e *errorAdapter) TestConnection(context.Context) error { return fmt.Errorf(e.reason) }
-func (e *errorAdapter) ListDatabases(context.Context) ([]DatabaseInfo, error) {
-	return nil, fmt.Errorf(e.reason)
-}
-func (e *errorAdapter) ListMeasurements(context.Context, QueryScope) ([]MeasurementInfo, error) {
-	return nil, fmt.Errorf(e.reason)
-}
-func (e *errorAdapter) ListFields(context.Context, QueryScope, string) ([]FieldInfo, error) {
-	return nil, fmt.Errorf(e.reason)
-}
-func (e *errorAdapter) ListTags(context.Context, QueryScope, string) ([]TagInfo, error) {
-	return nil, fmt.Errorf(e.reason)
-}
-func (e *errorAdapter) Query(context.Context, QueryRequest) (*QueryResult, error) {
-	return nil, fmt.Errorf(e.reason)
-}
-func (e *errorAdapter) Close() error { return nil }

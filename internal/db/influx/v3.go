@@ -23,18 +23,26 @@ type v3Adapter struct {
 	database   string
 }
 
-func newV3Adapter(profile connection.ConnectionProfile) InfluxAdapter {
-	timeout := time.Duration(profile.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+func newV3Adapter(profile connection.ConnectionProfile) Adapter {
+	// Long client-side safety net only. Real timeout is enforced by the
+	// request context (service.ExecuteQuery derives it from
+	// profile.TimeoutSeconds). Setting http.Client.Timeout to the profile
+	// value previously overrode the context deadline and broke long queries.
+	safetyNet := 2 * time.Hour
+	if t := profile.TimeoutSeconds; t > 0 {
+		safetyNet = time.Duration(t) * time.Second * 4
+		if safetyNet < time.Hour {
+			safetyNet = time.Hour
+		}
 	}
+
 	return &v3Adapter{
 		profile:    profile,
 		baseURL:    profile.URL,
 		queryURL:   fmt.Sprintf("%s/api/v3/query_sql", profile.URL),
 		token:      profile.Token,
 		database:   profile.Database,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: safetyNet},
 	}
 }
 
@@ -295,7 +303,7 @@ func (a *v3Adapter) ListTags(ctx context.Context, scope QueryScope, measurement 
 }
 
 func (a *v3Adapter) Query(ctx context.Context, req QueryRequest) (*QueryResult, error) {
-	queryText := limitQuery(req.Query, req.Limit)
+	queryText := localLimitQuery(req.Query, req.Limit)
 	results, err := a.doQuery(ctx, queryText, req.Database)
 	if err != nil {
 		return nil, err

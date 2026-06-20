@@ -18,7 +18,7 @@ type v2Adapter struct {
 	query   api.QueryAPI
 }
 
-func newV2Adapter(profile connection.ConnectionProfile) InfluxAdapter {
+func newV2Adapter(profile connection.ConnectionProfile) Adapter {
 	client := influxdb2.NewClient(profile.URL, profile.Token)
 	return &v2Adapter{
 		profile: profile,
